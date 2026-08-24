@@ -1,9 +1,9 @@
 /**
  * ============================================================================
- * CLOUDFLARE EMAIL WORKER - PASSERELLE INTELLIGENTE BALDEBRAISE
+ * CLOUDFLARE EMAIL WORKER - PASSERELLE INTELLIGENTE BALDEBRAISE (V2 CONDENSÉE)
  * ============================================================================
- * Permet de répondre aux clients directement depuis Gmail (ciebaldebraise@gmail.com)
- * avec l'expéditeur officiel compagnie@baldebraise.com et une mise en page VIP.
+ * Nettoie les citations brutes Gmail, met en valeur votre message personnalisé,
+ * et ajoute un condensé soigné de la demande de devis initiale avec template VIP.
  */
 
 const OWNER_EMAILS = ['ciebaldebraise@gmail.com', 'cie.baldebraise@gmail.com'];
@@ -13,7 +13,6 @@ const LOGO_URL = 'https://baldebraise.com/assets/media/logos/logo_v2_clean.png';
 const SITE_URL = 'https://baldebraise.com';
 const PHONE_NUMBER = '+33 7 86 62 75 92';
 
-// Encodage / Décodage de l'email client dans l'alias de réponse
 function encodeClientTag(clientEmail) {
   return clientEmail.replace('@', '=');
 }
@@ -22,13 +21,74 @@ function decodeClientTag(tag) {
   return tag.replace('=', '@');
 }
 
-// Template HTML VIP BalDeBraise pour les réponses
-function buildVipResponseTemplate(bodyText, subject) {
-  const formattedText = bodyText
+// Extraction du message propre et du condensé de la demande initiale
+function parseGmailReply(rawText) {
+  // Découpage au niveau de la citation Gmail standard (FR ou EN)
+  const splitRegex = /(?:On\s+[\w\s,:]+\s+at\s+[\d:]+\s*(?:AM|PM)?[\s\S]*?wrote:|Le\s+[\w\s,.:]+a\s+écrit\s*:|---------- Forwarded message ---------|------------- Message transféré -------------)/i;
+  
+  let userReply = rawText;
+  let quotedText = '';
+
+  const match = rawText.match(splitRegex);
+  if (match && match.index !== undefined) {
+    userReply = rawText.substring(0, match.index).trim();
+    quotedText = rawText.substring(match.index).trim();
+  }
+
+  // Extraction de la date et des paramètres du devis initial s'ils sont présents
+  let quoteInfo = null;
+  if (quotedText.includes('DEMANDE DE DEVIS') || quotedText.includes('DEVIS BALDEBRAISE')) {
+    let requestDate = '';
+    const dateMatch = quotedText.match(/(?:On\s+([\w\s,:]+?)\s+wrote:|Le\s+([\w\s,.:]+?)\s+a\s+écrit)/i);
+    if (dateMatch) {
+      requestDate = (dateMatch[1] || dateMatch[2] || '').trim();
+    }
+
+    const eventTypeMatch = quotedText.match(/(?:DEMANDE DE DEVIS\s*\n\s*([^\n]+)|Formule\s*:\s*([^\n]+))/i);
+    const clientMatch = quotedText.match(/CLIENT\s*([^\n]+)/i);
+    const phoneMatch = quotedText.match(/TÉLÉPHONE\s*([^\n]+)/i);
+    const dateFieldMatch = quotedText.match(/DATE\s*([^\n]+)/i);
+    const locationMatch = quotedText.match(/LIEU\s*([^\n]+)/i);
+    const msgMatch = quotedText.match(/MESSAGE\s*([\s\S]*?)(?:BalDeBraise|Reçu depuis|$)/i);
+
+    quoteInfo = {
+      requestDate: requestDate,
+      eventType: eventTypeMatch ? (eventTypeMatch[1] || eventTypeMatch[2] || '').trim() : '',
+      clientName: clientMatch ? clientMatch[1].trim() : '',
+      phone: phoneMatch ? phoneMatch[1].trim() : '',
+      eventDate: dateFieldMatch ? dateFieldMatch[1].trim() : '',
+      location: locationMatch ? locationMatch[1].trim() : '',
+      initialMessage: msgMatch ? msgMatch[1].trim() : ''
+    };
+  }
+
+  return { userReply, quoteInfo };
+}
+
+// Construction du template VIP BalDeBraise avec condensé de la demande
+function buildVipResponseTemplate(userReply, quoteInfo, subject) {
+  const cleanReplyHtml = userReply
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/\n/g, '<br>');
+
+  let quoteSummaryHtml = '';
+  if (quoteInfo) {
+    quoteSummaryHtml = `
+      <div style="margin-top: 30px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 85, 0, 0.25); border-left: 4px solid #FF5500; border-radius: 10px; padding: 18px 20px;">
+        <div style="color: #FFAA00; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">
+          📋 Rappel de votre demande de devis ${quoteInfo.requestDate ? '(' + quoteInfo.requestDate + ')' : ''}
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13.5px; color: #94A3B8;">
+          ${quoteInfo.eventType ? `<tr><td style="padding: 4px 0; width: 120px; color: #64748B;">Événement :</td><td style="color: #F0F4FC; font-weight: 600;">${quoteInfo.eventType}</td></tr>` : ''}
+          ${quoteInfo.location ? `<tr><td style="padding: 4px 0; color: #64748B;">Lieu / Dép. :</td><td style="color: #F0F4FC; font-weight: 600;">${quoteInfo.location}</td></tr>` : ''}
+          ${quoteInfo.eventDate && quoteInfo.eventDate !== 'Non spécifiée' ? `<tr><td style="padding: 4px 0; color: #64748B;">Date prévue :</td><td style="color: #F0F4FC; font-weight: 600;">${quoteInfo.eventDate}</td></tr>` : ''}
+          ${quoteInfo.initialMessage && quoteInfo.initialMessage !== 'Aucune précision.' ? `<tr><td style="padding: 6px 0 0 0; color: #64748B; vertical-align: top;">Précisions :</td><td style="padding: 6px 0 0 0; color: #CBD5E1; font-style: italic;">« ${quoteInfo.initialMessage} »</td></tr>` : ''}
+        </table>
+      </div>
+    `;
+  }
 
   return `<!DOCTYPE html>
 <html lang="fr">
@@ -36,37 +96,42 @@ function buildVipResponseTemplate(bodyText, subject) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${subject || 'Compagnie BalDeBraise'}</title>
-  <style>
-    body { font-family: 'Segoe UI', Arial, sans-serif; background-color: #07090E; color: #F0F4FC; margin: 0; padding: 24px 12px; }
-    .email-container { max-width: 620px; margin: 0 auto; background: #0F131C; border: 1px solid rgba(255, 85, 0, 0.35); border-radius: 14px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
-    .header { background: linear-gradient(135deg, #121724 0%, #07090E 100%); padding: 24px; text-align: center; border-bottom: 2px solid #FF5500; }
-    .logo { max-height: 55px; height: 55px; width: auto; }
-    .content { padding: 32px 28px; font-size: 15px; line-height: 1.7; color: #E2E8F0; }
-    .footer { background: #080A10; padding: 24px; text-align: center; border-top: 1px solid rgba(255, 255, 255, 0.08); font-size: 13px; color: #94A3B8; }
-    .footer-title { color: #FFAA00; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
-    .footer-links a { color: #00F0FF; text-decoration: none; margin: 0 8px; }
-    .badge-safety { display: inline-block; background: rgba(255,85,0,0.15); color: #FFAA00; border: 1px solid rgba(255,85,0,0.4); padding: 3px 10px; border-radius: 12px; font-size: 11px; margin-top: 10px; }
-  </style>
 </head>
-<body>
-  <div class="email-container">
-    <div class="header">
-      <a href="${SITE_URL}" target="_blank">
-        <img src="${LOGO_URL}" alt="BalDeBraise Logo" class="logo">
+<body style="font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif; background-color: #07090E; color: #F0F4FC; margin: 0; padding: 24px 12px;">
+  <div style="max-width: 620px; margin: 0 auto; background: #0F131C; border: 1px solid rgba(255, 85, 0, 0.35); border-radius: 16px; overflow: hidden; box-shadow: 0 12px 35px rgba(0,0,0,0.6);">
+    
+    <!-- En-tête officiel BalDeBraise -->
+    <div style="background: linear-gradient(135deg, #121724 0%, #07090E 100%); padding: 26px 20px; text-align: center; border-bottom: 2px solid #FF5500;">
+      <a href="${SITE_URL}" target="_blank" style="text-decoration: none;">
+        <img src="${LOGO_URL}" alt="BalDeBraise Logo" style="max-height: 52px; height: 52px; width: auto; display: inline-block;">
       </a>
     </div>
-    <div class="content">
-      ${formattedText}
-    </div>
-    <div class="footer">
-      <div class="footer-title">Compagnie BalDeBraise</div>
-      <p style="margin: 4px 0;">Spectacles de Feu d'Exception, Pyrotechnie &amp; Créations Pixel LED HD</p>
-      <div class="footer-links" style="margin: 12px 0;">
-        <a href="tel:${PHONE_NUMBER.replace(/\s+/g, '')}">📞 ${PHONE_NUMBER}</a> •
-        <a href="${SITE_URL}" target="_blank">🌐 baldebraise.com</a>
+
+    <!-- Corps : Message de la compagnie -->
+    <div style="padding: 32px 28px; font-size: 15.5px; line-height: 1.75; color: #E2E8F0;">
+      <div style="color: #FFFFFF;">
+        ${cleanReplyHtml}
       </div>
-      <div class="badge-safety">🛡️ Assurance RC Pro Spectacle Vivant &amp; Normes Artifices F4/T2</div>
+
+      <!-- Condensé de la demande -->
+      ${quoteSummaryHtml}
     </div>
+
+    <!-- Pied de page officiel VIP -->
+    <div style="background: #080A10; padding: 24px; text-align: center; border-top: 1px solid rgba(255, 255, 255, 0.08); font-size: 13px; color: #94A3B8;">
+      <div style="color: #FFAA00; font-weight: 700; font-size: 14px; margin-bottom: 4px;">Compagnie BalDeBraise</div>
+      <p style="margin: 3px 0 10px 0; font-size: 12px; color: #64748B;">Spectacles de Feu d'Exception, Pyrotechnie &amp; Créations Pixel LED HD</p>
+      
+      <div style="margin: 12px 0;">
+        <a href="tel:${PHONE_NUMBER.replace(/\s+/g, '')}" style="color: #00F0FF; text-decoration: none; font-weight: 600; margin: 0 8px;">📞 ${PHONE_NUMBER}</a> •
+        <a href="${SITE_URL}" target="_blank" style="color: #00F0FF; text-decoration: none; font-weight: 600; margin: 0 8px;">🌐 baldebraise.com</a>
+      </div>
+
+      <div style="display: inline-block; background: rgba(255,85,0,0.12); color: #FFAA00; border: 1px solid rgba(255,85,0,0.35); padding: 4px 12px; border-radius: 12px; font-size: 11px; margin-top: 8px;">
+        🛡️ Assurance RC Pro Spectacle Vivant &amp; Normes Artifices F4/T2
+      </div>
+    </div>
+
   </div>
 </body>
 </html>`;
@@ -119,19 +184,15 @@ export default {
 
       const rawMime = await readRawText(message.raw);
       
-      let cleanBody = rawMime;
+      // Extraction du corps de message propre
+      let bodyText = rawMime;
       if (rawMime.includes('\r\n\r\n')) {
-        cleanBody = rawMime.split('\r\n\r\n').slice(1).join('\r\n\r\n');
-      }
-      
-      if (cleanBody.includes('Le ') && cleanBody.includes('a écrit :')) {
-        cleanBody = cleanBody.split(/Le .* a écrit :/)[0].trim();
-      } else if (cleanBody.includes('On ') && cleanBody.includes('wrote:')) {
-        cleanBody = cleanBody.split(/On .* wrote:/)[0].trim();
+        bodyText = rawMime.split('\r\n\r\n').slice(1).join('\r\n\r\n');
       }
 
+      const { userReply, quoteInfo } = parseGmailReply(bodyText);
       const cleanSubject = rawSubject.startsWith('Re:') ? rawSubject : `Re: ${rawSubject}`;
-      const htmlContent = buildVipResponseTemplate(cleanBody, cleanSubject);
+      const htmlContent = buildVipResponseTemplate(userReply, quoteInfo, cleanSubject);
 
       const mailchannelsPayload = {
         personalizations: [
@@ -155,7 +216,7 @@ export default {
           },
           {
             type: 'text/plain',
-            value: cleanBody
+            value: userReply
           }
         ]
       };
