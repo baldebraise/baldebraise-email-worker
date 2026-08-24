@@ -1,12 +1,11 @@
 /**
  * ============================================================================
- * CLOUDFLARE EMAIL WORKER - PASSERELLE SÉCURISÉE AVEC ALERTES D'ERREURS
+ * CLOUDFLARE EMAIL WORKER - PASSERELLE SÉCURISÉE & CONDENSÉE BALDEBRAISE (V4)
  * ============================================================================
- * 1. Sécurité : Seule ciebaldebraise@gmail.com peut relayer vers les clients.
- * 2. Parsing propre : Isole votre réponse et le condensé du devis.
- * 3. Expédition : Envoi officiel depuis compagnie@baldebraise.com.
- * 4. Alertes automatiques : Envoie un e-mail d'alerte à cie.baldebraise@gmail.com
- *    avec les détails techniques et le texte du client en cas de pépin.
+ * 1. Cloudflare Native Email (env.EMAIL) prioritaire pour 100% de fiabilité.
+ * 2. Repli MailChannels automatique.
+ * 3. Alertes d'erreurs garanties vers cie.baldebraise@gmail.com.
+ * 4. Template VIP condensé et parsing anti-citations.
  */
 
 const OWNER_EMAILS = [
@@ -29,7 +28,7 @@ function decodeClientTag(tag) {
 }
 
 // Fonction d'alerte par e-mail en cas d'erreur du Worker
-async function sendErrorAlert(message, errorTitle, errorDetails, rawContent = '') {
+async function sendErrorAlert(env, message, errorTitle, errorDetails, rawContent = '') {
   console.error(`🚨 [ALERTE RELAIS EMAIL] ${errorTitle} - ${errorDetails}`);
 
   const safeTitle = (errorTitle || 'Erreur inconnue').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -77,6 +76,25 @@ async function sendErrorAlert(message, errorTitle, errorDetails, rawContent = ''
 </body>
 </html>`;
 
+  // 1. Envoi prioritaire via Cloudflare Native Email binding
+  if (env && env.EMAIL) {
+    try {
+      const rawMime =
+        `From: "BalDeBraise Alertes" <${OFFICIAL_EMAIL}>\r\n` +
+        `To: ${OWNER_EMAILS[0]}\r\n` +
+        `Subject: =?utf-8?B?${btoa(unescape(encodeURIComponent(`🚨 [ALERTE RELAIS] ${errorTitle}`)))}?=\r\n` +
+        `MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n` +
+        alertHtml;
+      const emailMsg = new EmailMessage(OFFICIAL_EMAIL, OWNER_EMAILS[0], rawMime);
+      await env.EMAIL.send(emailMsg);
+      console.log('✅ Alerte envoyée via Cloudflare Native EMAIL');
+      return;
+    } catch(e) {
+      console.warn('Échec envoi alerte Cloudflare Native:', e.message);
+    }
+  }
+
+  // 2. Repli MailChannels
   try {
     await fetch('https://api.mailchannels.net/tx/v1/send', {
       method: 'POST',
@@ -268,31 +286,36 @@ export default {
     const recipient = (message.to || '').toLowerCase().trim();
     const rawSubject = message.headers.get('subject') || 'Message BalDeBraise';
 
-    console.log(`📨 [Email Worker] De [${sender}] Vers [${recipient}] | Objet : ${rawSubject}`);
+    console.log(`📨 [Email Worker] Entrant : De [${sender}] Vers [${recipient}] | Objet : ${rawSubject}`);
 
     // =========================================================================
     // CAS 1 : VOUS RÉPONDEZ DEPUIS VOTRE GMAIL GÉRANT (ciebaldebraise@gmail.com)
     // =========================================================================
     const isOwner = OWNER_EMAILS.some(owner => sender.includes(owner.toLowerCase()));
-    const isRelayReply = recipient.includes('relais+') || recipient.includes('reply+');
+    const isRelayReply = recipient.includes('relais+') || recipient.includes('reply+') || recipient.includes('compagnie+');
 
     if (isRelayReply) {
       if (!isOwner) {
+        console.warn(`⛔ [Sécurité] Expéditeur [${sender}] non autorisé.`);
         await sendErrorAlert(
+          env,
           message,
           'Tentative de relai non autorisée',
-          `L'expéditeur [${sender}] a tenté d'utiliser l'alias [${recipient}] mais ne fait pas partie des adresses propriétaires autorisées.`
+          `L'expéditeur [${sender}] a tenté de relayer vers [${recipient}] mais n'est pas dans la liste des gérants autorisés.`
         );
         return;
       }
 
       console.log('⚡ [Relais Vérifié] Expéditeur propriétaire validé -> Traitement...');
 
-      const match = recipient.match(/(?:relais|reply)\+([^@>]+)@/i);
+      // Extraction de l'email client depuis relais+client=domaine.com@baldebraise.com
+      const match = recipient.match(/(?:relais|reply|compagnie)\+([^@>]+)@/i);
       if (!match || !match[1]) {
+        console.error('❌ Impossible de décoder l\'email client depuis :', recipient);
         await sendErrorAlert(
+          env,
           message,
-          'Échec de décodage de l\'adresse client',
+          'Échec décodage adresse client',
           `Impossible d'extraire l'adresse e-mail du client depuis le destinataire [${recipient}].`
         );
         return;
@@ -312,6 +335,27 @@ export default {
       const cleanSubject = rawSubject.startsWith('Re:') ? rawSubject : `Re: ${rawSubject}`;
       const htmlContent = buildVipResponseTemplate(replyText, quoteInfo, cleanSubject);
 
+      // 1. PRIORITÉ : Envoi via Cloudflare Native Email binding (si activé)
+      if (env && env.EMAIL) {
+        try {
+          const rawMimeOut =
+            `From: "${BRAND_NAME}" <${OFFICIAL_EMAIL}>\r\n` +
+            `To: ${clientEmail}\r\n` +
+            `Reply-To: "${BRAND_NAME}" <relais+${encodeClientTag(clientEmail)}@baldebraise.com>\r\n` +
+            `Subject: =?utf-8?B?${btoa(unescape(encodeURIComponent(cleanSubject)))}?=\r\n` +
+            `MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n` +
+            htmlContent;
+
+          const emailMsg = new EmailMessage(OFFICIAL_EMAIL, clientEmail, rawMimeOut);
+          await env.EMAIL.send(emailMsg);
+          console.log(`✅ [Cloudflare Native] E-mail envoyé avec succès à ${clientEmail}`);
+          return;
+        } catch(cfErr) {
+          console.warn('⚠️ Cloudflare Native EMAIL.send a échoué :', cfErr.message);
+        }
+      }
+
+      // 2. REPLI : Expédition via MailChannels API
       const mailchannelsPayload = {
         personalizations: [
           {
@@ -349,19 +393,21 @@ export default {
         const resBody = await sendRes.text();
         console.log(`📤 Statut d'envoi MailChannels : HTTP ${sendRes.status} (${resBody.substring(0, 80)})`);
 
-        // Si MailChannels renvoie une erreur (autre que 200/202)
         if (!sendRes.ok && sendRes.status !== 202) {
           await sendErrorAlert(
+            env,
             message,
             `Erreur d'expédition MailChannels (HTTP ${sendRes.status})`,
-            `Le serveur d'envoi MailChannels a retourné une erreur lors de l'envoi vers [${clientEmail}] : ${resBody}`,
+            `Le serveur MailChannels a refusé l'envoi vers [${clientEmail}] : ${resBody}`,
             replyText
           );
         }
       } catch(err) {
+        console.error('❌ Exception envoi MailChannels:', err.message);
         await sendErrorAlert(
+          env,
           message,
-          'Exception réseau lors de l\'envoi MailChannels',
+          'Exception réseau lors de l\'envoi',
           `Erreur : ${err.message}`,
           replyText
         );
@@ -386,6 +432,7 @@ export default {
     } catch(err) {
       console.error('❌ Erreur transfert message.forward:', err.message);
       await sendErrorAlert(
+        env,
         message,
         'Échec du transfert d\'un message entrant vers Gmail',
         `Le transfert vers ${OWNER_EMAILS[0]} a échoué : ${err.message}`
