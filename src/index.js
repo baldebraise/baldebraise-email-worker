@@ -1,16 +1,17 @@
 /**
  * ============================================================================
- * CLOUDFLARE EMAIL WORKER - PASSERELLE SÉCURISÉE & CONDENSÉE BALDEBRAISE
+ * CLOUDFLARE EMAIL WORKER - PASSERELLE SÉCURISÉE AVEC ALERTES D'ERREURS
  * ============================================================================
- * 1. Sécurité : Vérifie que seule l'adresse ciebaldebraise@gmail.com relaye.
- * 2. Parsing propre : Extrait le message sans aucune citation brute.
- * 3. Condensé VIP : Intègre le récapitulatif chic de la demande initiale.
- * 4. Expédition : Envoi officiel depuis compagnie@baldebraise.com.
+ * 1. Sécurité : Seule ciebaldebraise@gmail.com peut relayer vers les clients.
+ * 2. Parsing propre : Isole votre réponse et le condensé du devis.
+ * 3. Expédition : Envoi officiel depuis compagnie@baldebraise.com.
+ * 4. Alertes automatiques : Envoie un e-mail d'alerte à cie.baldebraise@gmail.com
+ *    avec les détails techniques et le texte du client en cas de pépin.
  */
 
 const OWNER_EMAILS = [
-  'ciebaldebraise@gmail.com',
-  'cie.baldebraise@gmail.com'
+  'cie.baldebraise@gmail.com',
+  'ciebaldebraise@gmail.com'
 ];
 
 const OFFICIAL_EMAIL = 'compagnie@baldebraise.com';
@@ -27,11 +28,75 @@ function decodeClientTag(tag) {
   return (tag || '').trim().replace(/=/g, '@');
 }
 
+// Fonction d'alerte par e-mail en cas d'erreur du Worker
+async function sendErrorAlert(message, errorTitle, errorDetails, rawContent = '') {
+  console.error(`🚨 [ALERTE RELAIS EMAIL] ${errorTitle} - ${errorDetails}`);
+
+  const safeTitle = (errorTitle || 'Erreur inconnue').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeDetails = (errorDetails || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+  const safeFrom = (message?.from || 'Inconnu').replace(/</g, '&lt;');
+  const safeTo = (message?.to || 'Inconnu').replace(/</g, '&lt;');
+  const safeSubject = (message?.headers?.get('subject') || 'Sans objet').replace(/</g, '&lt;');
+  const dateStr = new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' });
+
+  const alertHtml = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: 'Segoe UI', Arial, sans-serif; background-color: #07090E; color: #F0F4FC; padding: 24px 12px; margin: 0;">
+  <div style="max-width: 620px; margin: 0 auto; background: #0F131C; border: 2px solid #FF2200; border-radius: 14px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.6);">
+    <div style="background: linear-gradient(135deg, #2D0A0A 0%, #0F131C 100%); padding: 20px 24px; border-bottom: 2px solid #FF2200;">
+      <h2 style="color: #FF4444; margin: 0; font-size: 18px;">🚨 Alerte Système : Échec Relais Email BalDeBraise</h2>
+    </div>
+    <div style="padding: 24px; font-size: 14px; line-height: 1.6; color: #E2E8F0;">
+      <p style="margin-top: 0;">Une erreur est survenue lors du traitement d'un e-mail par le Cloudflare Email Worker.</p>
+      
+      <div style="background: rgba(255, 34, 0, 0.08); border-left: 4px solid #FF2200; padding: 14px 16px; border-radius: 6px; margin: 18px 0;">
+        <div style="color: #FFAA00; font-weight: 700; margin-bottom: 4px;">Incident : ${safeTitle}</div>
+        <div style="font-family: monospace; font-size: 12.5px; color: #CBD5E1;">${safeDetails}</div>
+      </div>
+
+      <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #94A3B8; margin-top: 14px;">
+        <tr><td style="padding: 4px 0; width: 100px; color: #64748B;">Expéditeur :</td><td style="color: #F0F4FC; font-family: monospace;">${safeFrom}</td></tr>
+        <tr><td style="padding: 4px 0; color: #64748B;">Destinataire :</td><td style="color: #F0F4FC; font-family: monospace;">${safeTo}</td></tr>
+        <tr><td style="padding: 4px 0; color: #64748B;">Objet :</td><td style="color: #F0F4FC;">${safeSubject}</td></tr>
+        <tr><td style="padding: 4px 0; color: #64748B;">Date / Heure :</td><td style="color: #F0F4FC;">${dateStr}</td></tr>
+      </table>
+
+      ${rawContent ? `
+        <div style="margin-top: 20px;">
+          <div style="color: #FFAA00; font-size: 12px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px;">Contenu du message intercepté :</div>
+          <div style="background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #CBD5E1; max-height: 180px; overflow-y: auto; white-space: pre-wrap;">${rawContent.replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 1500)}</div>
+        </div>
+      ` : ''}
+
+      <p style="margin-top: 22px; font-size: 12.5px; color: #94A3B8; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px;">
+        💡 <em>Vous pouvez répondre directement au client avec son adresse email pour ne pas perdre le contact.</em>
+      </p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  try {
+    await fetch('https://api.mailchannels.net/tx/v1/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: OWNER_EMAILS[0] }] }],
+        from: { email: OFFICIAL_EMAIL, name: 'BalDeBraise Alerte Relais' },
+        subject: `🚨 [ALERTE RELAIS] ${errorTitle}`,
+        content: [{ type: 'text/html', value: alertHtml }]
+      })
+    });
+  } catch(e) {
+    console.error('Échec envoi alerte MailChannels:', e.message);
+  }
+}
+
 // Extraction robuste du message et des métadonnées du devis
 function extractCleanMessageAndQuote(rawMime) {
   if (!rawMime) return { replyText: 'Bonjour, voici notre retour concernant votre demande.', quoteInfo: null };
 
-  // 1. Séparation des entêtes et du corps du message
   let body = rawMime;
   if (rawMime.includes('\r\n\r\n')) {
     body = rawMime.split('\r\n\r\n').slice(1).join('\r\n\r\n');
@@ -39,7 +104,6 @@ function extractCleanMessageAndQuote(rawMime) {
     body = rawMime.split('\n\n').slice(1).join('\n\n');
   }
 
-  // 2. Si le message est au format multipart, extraire la partie text/plain
   if (body.includes('Content-Type: text/plain')) {
     const parts = body.split(/--[^\r\n]+/);
     for (const p of parts) {
@@ -53,7 +117,6 @@ function extractCleanMessageAndQuote(rawMime) {
     }
   }
 
-  // 3. Découpage pour isoler la réponse de la citation
   const quoteMarkers = [
     /On\s+[\w\s,:]+\s+at\s+[\d:]+\s*(?:AM|PM)?[\s\S]*?wrote:/i,
     /Le\s+[\w\s,.:]+a\s+écrit\s*:/i,
@@ -76,7 +139,6 @@ function extractCleanMessageAndQuote(rawMime) {
 
   replyText = replyText.trim();
 
-  // 4. Extraction des informations de devis depuis le bloc cité uniquement
   let quoteInfo = null;
   if (quoteBlock.includes('DEMANDE DE DEVIS') || quoteBlock.includes('DEVIS BALDEBRAISE')) {
     let requestDate = '';
@@ -111,7 +173,6 @@ function extractCleanMessageAndQuote(rawMime) {
   };
 }
 
-// Template VIP BalDeBraise avec condensé chic
 function buildVipResponseTemplate(userReply, quoteInfo, subject) {
   const cleanReplyHtml = userReply
     .replace(/&/g, '&amp;')
@@ -183,7 +244,6 @@ function buildVipResponseTemplate(userReply, quoteInfo, subject) {
 </html>`;
 }
 
-// Extraction du texte brut propre d'un stream MIME
 async function readRawText(stream) {
   const reader = stream.getReader();
   const chunks = [];
@@ -218,16 +278,23 @@ export default {
 
     if (isRelayReply) {
       if (!isOwner) {
-        console.warn(`⛔ [Sécurité] Expéditeur [${sender}] non autorisé.`);
+        await sendErrorAlert(
+          message,
+          'Tentative de relai non autorisée',
+          `L'expéditeur [${sender}] a tenté d'utiliser l'alias [${recipient}] mais ne fait pas partie des adresses propriétaires autorisées.`
+        );
         return;
       }
 
       console.log('⚡ [Relais Vérifié] Expéditeur propriétaire validé -> Traitement...');
 
-      // Extraction de l'email client depuis relais+client=domaine.com@baldebraise.com
       const match = recipient.match(/(?:relais|reply)\+([^@>]+)@/i);
       if (!match || !match[1]) {
-        console.error('❌ Impossible de décoder l\'email client depuis :', recipient);
+        await sendErrorAlert(
+          message,
+          'Échec de décodage de l\'adresse client',
+          `Impossible d'extraire l'adresse e-mail du client depuis le destinataire [${recipient}].`
+        );
         return;
       }
 
@@ -245,7 +312,6 @@ export default {
       const cleanSubject = rawSubject.startsWith('Re:') ? rawSubject : `Re: ${rawSubject}`;
       const htmlContent = buildVipResponseTemplate(replyText, quoteInfo, cleanSubject);
 
-      // Expédition vers le client avec l'expéditeur officiel compagnie@baldebraise.com
       const mailchannelsPayload = {
         personalizations: [
           {
@@ -282,8 +348,23 @@ export default {
 
         const resBody = await sendRes.text();
         console.log(`📤 Statut d'envoi MailChannels : HTTP ${sendRes.status} (${resBody.substring(0, 80)})`);
+
+        // Si MailChannels renvoie une erreur (autre que 200/202)
+        if (!sendRes.ok && sendRes.status !== 202) {
+          await sendErrorAlert(
+            message,
+            `Erreur d'expédition MailChannels (HTTP ${sendRes.status})`,
+            `Le serveur d'envoi MailChannels a retourné une erreur lors de l'envoi vers [${clientEmail}] : ${resBody}`,
+            replyText
+          );
+        }
       } catch(err) {
-        console.error('❌ Erreur expédition MailChannels:', err.message);
+        await sendErrorAlert(
+          message,
+          'Exception réseau lors de l\'envoi MailChannels',
+          `Erreur : ${err.message}`,
+          replyText
+        );
       }
       return;
     }
@@ -304,6 +385,11 @@ export default {
       console.log(`✅ Message transféré à ${OWNER_EMAILS[0]} avec Reply-To: ${relayReplyTo}`);
     } catch(err) {
       console.error('❌ Erreur transfert message.forward:', err.message);
+      await sendErrorAlert(
+        message,
+        'Échec du transfert d\'un message entrant vers Gmail',
+        `Le transfert vers ${OWNER_EMAILS[0]} a échoué : ${err.message}`
+      );
     }
   }
 };
