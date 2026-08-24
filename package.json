@@ -1,0 +1,17 @@
+{
+  "name": "baldebraise-email-relay",
+  "version": "1.0.0",
+  "description": "Cloudflare Email Worker - Passerelle de messagerie bidirectionnelle BalDeBraise avec template VIP",
+  "main": "src/index.js",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "keywords": [
+    "cloudflare",
+    "email-worker",
+    "relay",
+    "baldebraise"
+  ],
+  "author": "Compagnie BalDeBraise",
+  "license": "MIT"
+}
