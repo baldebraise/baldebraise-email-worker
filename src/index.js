@@ -1,12 +1,13 @@
 /**
  * ============================================================================
- * CLOUDFLARE EMAIL WORKER - PASSERELLE SÉCURISÉE BALDEBRAISE
+ * CLOUDFLARE EMAIL WORKER - PASSERELLE SÉCURISÉE & CONDENSÉE BALDEBRAISE
  * ============================================================================
- * Sécurité stricte : Seule votre adresse officielle ciebaldebraise@gmail.com
- * est autorisée à relayer des messages vers les clients.
+ * 1. Sécurité : Vérifie que seule l'adresse ciebaldebraise@gmail.com relaye.
+ * 2. Parsing propre : Extrait le message sans aucune citation brute.
+ * 3. Condensé VIP : Intègre le récapitulatif chic de la demande initiale.
+ * 4. Expédition : Envoi officiel depuis compagnie@baldebraise.com.
  */
 
-// Seule votre adresse de gestion est autorisée à envoyer des réponses
 const OWNER_EMAILS = [
   'ciebaldebraise@gmail.com',
   'cie.baldebraise@gmail.com'
@@ -19,56 +20,98 @@ const SITE_URL = 'https://baldebraise.com';
 const PHONE_NUMBER = '+33 7 86 62 75 92';
 
 function encodeClientTag(clientEmail) {
-  return clientEmail.trim().replace(/@/g, '=');
+  return (clientEmail || '').trim().replace(/@/g, '=');
 }
 
 function decodeClientTag(tag) {
-  return tag.trim().replace(/=/g, '@');
+  return (tag || '').trim().replace(/=/g, '@');
 }
 
-// Extraction du message propre et du condensé de la demande initiale
-function parseGmailReply(rawText) {
-  const splitRegex = /(?:On\s+[\w\s,:]+\s+at\s+[\d:]+\s*(?:AM|PM)?[\s\S]*?wrote:|Le\s+[\w\s,.:]+a\s+écrit\s*:|---------- Forwarded message ---------|------------- Message transféré -------------)/i;
-  
-  let userReply = rawText;
-  let quotedText = '';
+// Extraction robuste du message et des métadonnées du devis
+function extractCleanMessageAndQuote(rawMime) {
+  if (!rawMime) return { replyText: 'Bonjour, voici notre retour concernant votre demande.', quoteInfo: null };
 
-  const match = rawText.match(splitRegex);
-  if (match && match.index !== undefined) {
-    userReply = rawText.substring(0, match.index).trim();
-    quotedText = rawText.substring(match.index).trim();
+  // 1. Séparation des entêtes et du corps du message
+  let body = rawMime;
+  if (rawMime.includes('\r\n\r\n')) {
+    body = rawMime.split('\r\n\r\n').slice(1).join('\r\n\r\n');
+  } else if (rawMime.includes('\n\n')) {
+    body = rawMime.split('\n\n').slice(1).join('\n\n');
   }
 
+  // 2. Si le message est au format multipart, extraire la partie text/plain
+  if (body.includes('Content-Type: text/plain')) {
+    const parts = body.split(/--[^\r\n]+/);
+    for (const p of parts) {
+      if (p.includes('Content-Type: text/plain')) {
+        const sub = p.split(/\r?\n\r?\n/).slice(1).join('\n');
+        if (sub.trim()) {
+          body = sub;
+          break;
+        }
+      }
+    }
+  }
+
+  // 3. Découpage pour isoler la réponse de la citation
+  const quoteMarkers = [
+    /On\s+[\w\s,:]+\s+at\s+[\d:]+\s*(?:AM|PM)?[\s\S]*?wrote:/i,
+    /Le\s+[\w\s,.:]+a\s+écrit\s*:/i,
+    /---------- Forwarded message ---------/i,
+    /------------- Message transféré -------------/i,
+    /BALDEBRAISE - DEMANDE DE DEVIS/i
+  ];
+
+  let replyText = body;
+  let quoteBlock = '';
+
+  for (const marker of quoteMarkers) {
+    const match = body.match(marker);
+    if (match && match.index !== undefined && match.index > 0) {
+      replyText = body.substring(0, match.index).trim();
+      quoteBlock = body.substring(match.index).trim();
+      break;
+    }
+  }
+
+  replyText = replyText.trim();
+
+  // 4. Extraction des informations de devis depuis le bloc cité uniquement
   let quoteInfo = null;
-  if (quotedText.includes('DEMANDE DE DEVIS') || quotedText.includes('DEVIS BALDEBRAISE')) {
+  if (quoteBlock.includes('DEMANDE DE DEVIS') || quoteBlock.includes('DEVIS BALDEBRAISE')) {
     let requestDate = '';
-    const dateMatch = quotedText.match(/(?:On\s+([\w\s,:]+?)\s+wrote:|Le\s+([\w\s,.:]+?)\s+a\s+écrit)/i);
+    const dateMatch = quoteBlock.match(/(?:On\s+([\w\s,:]+?)\s+wrote:|Le\s+([\w\s,.:]+?)\s+a\s+écrit)/i);
     if (dateMatch) {
       requestDate = (dateMatch[1] || dateMatch[2] || '').trim();
     }
 
-    const eventTypeMatch = quotedText.match(/(?:DEMANDE DE DEVIS\s*\n\s*([^\n]+)|Formule\s*:\s*([^\n]+))/i);
-    const clientMatch = quotedText.match(/CLIENT\s*([^\n]+)/i);
-    const phoneMatch = quotedText.match(/TÉLÉPHONE\s*([^\n]+)/i);
-    const dateFieldMatch = quotedText.match(/DATE\s*([^\n]+)/i);
-    const locationMatch = quotedText.match(/LIEU\s*([^\n]+)/i);
-    const msgMatch = quotedText.match(/MESSAGE\s*([\s\S]*?)(?:BalDeBraise|Reçu depuis|$)/i);
+    const eventTypeMatch = quoteBlock.match(/(?:DEMANDE DE DEVIS\s*\n\s*([^\n]+)|Formule\s*:\s*([^\n]+))/i);
+    const clientMatch = quoteBlock.match(/CLIENT\s*:\s*([^\n]+)|CLIENT\s*([^\n]+)/i);
+    const phoneMatch = quoteBlock.match(/TÉLÉPHONE\s*:\s*([^\n]+)|TÉLÉPHONE\s*([^\n]+)/i);
+    const dateFieldMatch = quoteBlock.match(/DATE\s*:\s*([^\n]+)|DATE\s*([^\n]+)/i);
+    const locationMatch = quoteBlock.match(/LIEU\s*:\s*([^\n]+)|LIEU\s*([^\n]+)/i);
+    const msgMatch = quoteBlock.match(/MESSAGE\s*:\s*([\s\S]*?)(?:BalDeBraise|Reçu depuis|--|$)|MESSAGE\s*([\s\S]*?)(?:BalDeBraise|Reçu depuis|--|$)/i);
+
+    const rawMsg = (msgMatch ? (msgMatch[1] || msgMatch[2] || '') : '').trim();
 
     quoteInfo = {
       requestDate: requestDate,
       eventType: eventTypeMatch ? (eventTypeMatch[1] || eventTypeMatch[2] || '').trim() : '',
-      clientName: clientMatch ? clientMatch[1].trim() : '',
-      phone: phoneMatch ? phoneMatch[1].trim() : '',
-      eventDate: dateFieldMatch ? dateFieldMatch[1].trim() : '',
-      location: locationMatch ? locationMatch[1].trim() : '',
-      initialMessage: msgMatch ? msgMatch[1].trim() : ''
+      clientName: clientMatch ? (clientMatch[1] || clientMatch[2] || '').trim() : '',
+      phone: phoneMatch ? (phoneMatch[1] || phoneMatch[2] || '').trim() : '',
+      eventDate: dateFieldMatch ? (dateFieldMatch[1] || dateFieldMatch[2] || '').trim() : '',
+      location: locationMatch ? (locationMatch[1] || locationMatch[2] || '').trim() : '',
+      initialMessage: rawMsg === 'Aucune précision.' ? '' : rawMsg
     };
   }
 
-  return { userReply, quoteInfo };
+  return {
+    replyText: replyText || 'Bonjour, voici notre retour concernant votre demande.',
+    quoteInfo
+  };
 }
 
-// Template HTML VIP BalDeBraise avec condensé de la demande
+// Template VIP BalDeBraise avec condensé chic
 function buildVipResponseTemplate(userReply, quoteInfo, subject) {
   const cleanReplyHtml = userReply
     .replace(/&/g, '&amp;')
@@ -77,7 +120,7 @@ function buildVipResponseTemplate(userReply, quoteInfo, subject) {
     .replace(/\n/g, '<br>');
 
   let quoteSummaryHtml = '';
-  if (quoteInfo) {
+  if (quoteInfo && (quoteInfo.eventType || quoteInfo.location || quoteInfo.initialMessage)) {
     quoteSummaryHtml = `
       <div style="margin-top: 28px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 85, 0, 0.25); border-left: 4px solid #FF5500; border-radius: 10px; padding: 18px 20px;">
         <div style="color: #FFAA00; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">
@@ -87,7 +130,7 @@ function buildVipResponseTemplate(userReply, quoteInfo, subject) {
           ${quoteInfo.eventType ? `<tr><td style="padding: 4px 0; width: 120px; color: #64748B;">Événement :</td><td style="color: #F0F4FC; font-weight: 600;">${quoteInfo.eventType}</td></tr>` : ''}
           ${quoteInfo.location ? `<tr><td style="padding: 4px 0; color: #64748B;">Lieu / Dép. :</td><td style="color: #F0F4FC; font-weight: 600;">${quoteInfo.location}</td></tr>` : ''}
           ${quoteInfo.eventDate && quoteInfo.eventDate !== 'Non spécifiée' ? `<tr><td style="padding: 4px 0; color: #64748B;">Date prévue :</td><td style="color: #F0F4FC; font-weight: 600;">${quoteInfo.eventDate}</td></tr>` : ''}
-          ${quoteInfo.initialMessage && quoteInfo.initialMessage !== 'Aucune précision.' ? `<tr><td style="padding: 6px 0 0 0; color: #64748B; vertical-align: top;">Précisions :</td><td style="padding: 6px 0 0 0; color: #CBD5E1; font-style: italic;">« ${quoteInfo.initialMessage} »</td></tr>` : ''}
+          ${quoteInfo.initialMessage ? `<tr><td style="padding: 6px 0 0 0; color: #64748B; vertical-align: top;">Précisions :</td><td style="padding: 6px 0 0 0; color: #CBD5E1; font-style: italic;">« ${quoteInfo.initialMessage} »</td></tr>` : ''}
         </table>
       </div>
     `;
@@ -174,15 +217,14 @@ export default {
     const isRelayReply = recipient.includes('relais+') || recipient.includes('reply+');
 
     if (isRelayReply) {
-      // Sécurité stricte : vérification de l'expéditeur propriétaire
       if (!isOwner) {
-        console.warn(`⛔ [Sécurité] Tentative de relai bloquée : expéditeur [${sender}] non autorisé.`);
+        console.warn(`⛔ [Sécurité] Expéditeur [${sender}] non autorisé.`);
         return;
       }
 
-      console.log('⚡ [Relais Vérifié] Expéditeur propriétaire validé -> Expédition vers le client...');
+      console.log('⚡ [Relais Vérifié] Expéditeur propriétaire validé -> Traitement...');
 
-      // Extraction de l'email client : relais+client=domaine.com@baldebraise.com
+      // Extraction de l'email client depuis relais+client=domaine.com@baldebraise.com
       const match = recipient.match(/(?:relais|reply)\+([^@>]+)@/i);
       if (!match || !match[1]) {
         console.error('❌ Impossible de décoder l\'email client depuis :', recipient);
@@ -192,16 +234,16 @@ export default {
       const clientEmail = decodeClientTag(match[1]);
       console.log(`🎯 Email client cible : ${clientEmail}`);
 
-      const rawMime = await readRawText(message.raw);
-      
-      let bodyText = rawMime;
-      if (rawMime.includes('\r\n\r\n')) {
-        bodyText = rawMime.split('\r\n\r\n').slice(1).join('\r\n\r\n');
+      let rawMime = '';
+      try {
+        rawMime = await readRawText(message.raw);
+      } catch(e) {
+        console.error('Erreur lecture MIME:', e.message);
       }
 
-      const { userReply, quoteInfo } = parseGmailReply(bodyText);
+      const { replyText, quoteInfo } = extractCleanMessageAndQuote(rawMime);
       const cleanSubject = rawSubject.startsWith('Re:') ? rawSubject : `Re: ${rawSubject}`;
-      const htmlContent = buildVipResponseTemplate(userReply, quoteInfo, cleanSubject);
+      const htmlContent = buildVipResponseTemplate(replyText, quoteInfo, cleanSubject);
 
       // Expédition vers le client avec l'expéditeur officiel compagnie@baldebraise.com
       const mailchannelsPayload = {
@@ -226,35 +268,42 @@ export default {
           },
           {
             type: 'text/plain',
-            value: userReply
+            value: replyText
           }
         ]
       };
 
-      const sendRes = await fetch('https://api.mailchannels.net/tx/v1/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(mailchannelsPayload)
-      });
+      try {
+        const sendRes = await fetch('https://api.mailchannels.net/tx/v1/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(mailchannelsPayload)
+        });
 
-      const resBody = await sendRes.text();
-      console.log(`📤 Statut d'envoi MailChannels : HTTP ${sendRes.status} (${resBody.substring(0, 80)})`);
+        const resBody = await sendRes.text();
+        console.log(`📤 Statut d'envoi MailChannels : HTTP ${sendRes.status} (${resBody.substring(0, 80)})`);
+      } catch(err) {
+        console.error('❌ Erreur expédition MailChannels:', err.message);
+      }
       return;
     }
 
     // =========================================================================
-    // CAS 2 : UN CLIENT ÉCRIT À COMPAGNIE@BALDEBRAISE.COM
+    // CAS 2 : UN CLIENT ÉCRIT DIRECTEMENT À COMPAGNIE@BALDEBRAISE.COM
     // =========================================================================
     console.log('📬 Réception d\'un message client -> Transfert vers ciebaldebraise@gmail.com');
 
     const clientTag = encodeClientTag(sender);
     const relayReplyTo = `relais+${clientTag}@baldebraise.com`;
 
-    await message.forward(OWNER_EMAILS[0], new Headers({
-      'Reply-To': relayReplyTo,
-      'X-BalDeBraise-Client': sender
-    }));
-
-    console.log(`✅ Message transféré à ${OWNER_EMAILS[0]} avec Reply-To: ${relayReplyTo}`);
+    try {
+      await message.forward(OWNER_EMAILS[0], new Headers({
+        'Reply-To': relayReplyTo,
+        'X-BalDeBraise-Client': sender
+      }));
+      console.log(`✅ Message transféré à ${OWNER_EMAILS[0]} avec Reply-To: ${relayReplyTo}`);
+    } catch(err) {
+      console.error('❌ Erreur transfert message.forward:', err.message);
+    }
   }
 };
