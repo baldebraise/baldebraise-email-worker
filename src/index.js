@@ -1,19 +1,15 @@
 /**
  * ============================================================================
- * CLOUDFLARE EMAIL WORKER - PASSERELLE INTELLIGENTE BALDEBRAISE (V3 INFALLIBLE)
+ * CLOUDFLARE EMAIL WORKER - PASSERELLE SÉCURISÉE BALDEBRAISE
  * ============================================================================
- * Gère le relai des réponses Gmail vers les clients avec :
- * 1. Détection élargie des adresses d'expédition (ciebaldebraise & axe.aube)
- * 2. Nettoyage complet des citations brutes
- * 3. Condensé élégant de la demande de devis initiale
- * 4. Double moteur d'expédition (MailChannels + Resend API si configurée)
+ * Sécurité stricte : Seule votre adresse officielle ciebaldebraise@gmail.com
+ * est autorisée à relayer des messages vers les clients.
  */
 
+// Seule votre adresse de gestion est autorisée à envoyer des réponses
 const OWNER_EMAILS = [
   'ciebaldebraise@gmail.com',
-  'cie.baldebraise@gmail.com',
-  'axe.aube@gmail.com',
-  'axeaube@gmail.com'
+  'cie.baldebraise@gmail.com'
 ];
 
 const OFFICIAL_EMAIL = 'compagnie@baldebraise.com';
@@ -23,11 +19,11 @@ const SITE_URL = 'https://baldebraise.com';
 const PHONE_NUMBER = '+33 7 86 62 75 92';
 
 function encodeClientTag(clientEmail) {
-  return clientEmail.replace(/@/g, '=');
+  return clientEmail.trim().replace(/@/g, '=');
 }
 
 function decodeClientTag(tag) {
-  return tag.replace(/=/g, '@');
+  return tag.trim().replace(/=/g, '@');
 }
 
 // Extraction du message propre et du condensé de la demande initiale
@@ -72,7 +68,7 @@ function parseGmailReply(rawText) {
   return { userReply, quoteInfo };
 }
 
-// Construction du template VIP BalDeBraise avec condensé de la demande
+// Template HTML VIP BalDeBraise avec condensé de la demande
 function buildVipResponseTemplate(userReply, quoteInfo, subject) {
   const cleanReplyHtml = userReply
     .replace(/&/g, '&amp;')
@@ -172,15 +168,21 @@ export default {
     console.log(`📨 [Email Worker] De [${sender}] Vers [${recipient}] | Objet : ${rawSubject}`);
 
     // =========================================================================
-    // CAS 1 : RÉPONSE VERS LE RELAIS (relais+client=domaine@baldebraise.com)
+    // CAS 1 : VOUS RÉPONDEZ DEPUIS VOTRE GMAIL GÉRANT (ciebaldebraise@gmail.com)
     // =========================================================================
+    const isOwner = OWNER_EMAILS.some(owner => sender.includes(owner.toLowerCase()));
     const isRelayReply = recipient.includes('relais+') || recipient.includes('reply+');
-    const isAuthorizedSender = OWNER_EMAILS.some(owner => sender.includes(owner.toLowerCase())) || isRelayReply;
 
-    if (isRelayReply && isAuthorizedSender) {
-      console.log('⚡ [Relais Activé] Détection d\'une réponse Gmail -> Redirection vers le client...');
+    if (isRelayReply) {
+      // Sécurité stricte : vérification de l'expéditeur propriétaire
+      if (!isOwner) {
+        console.warn(`⛔ [Sécurité] Tentative de relai bloquée : expéditeur [${sender}] non autorisé.`);
+        return;
+      }
 
-      // Extraction de l'email client depuis le destinataire relais+client=domaine.com@...
+      console.log('⚡ [Relais Vérifié] Expéditeur propriétaire validé -> Expédition vers le client...');
+
+      // Extraction de l'email client : relais+client=domaine.com@baldebraise.com
       const match = recipient.match(/(?:relais|reply)\+([^@>]+)@/i);
       if (!match || !match[1]) {
         console.error('❌ Impossible de décoder l\'email client depuis :', recipient);
@@ -201,30 +203,7 @@ export default {
       const cleanSubject = rawSubject.startsWith('Re:') ? rawSubject : `Re: ${rawSubject}`;
       const htmlContent = buildVipResponseTemplate(userReply, quoteInfo, cleanSubject);
 
-      // Si une clé Resend API est configurée dans l'environnement Cloudflare
-      if (env && env.RESEND_API_KEY) {
-        console.log('🚀 Envoi via Resend API...');
-        const resendRes = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            from: `${BRAND_NAME} <${OFFICIAL_EMAIL}>`,
-            to: [clientEmail],
-            reply_to: `relais+${encodeClientTag(clientEmail)}@baldebraise.com`,
-            subject: cleanSubject,
-            html: htmlContent,
-            text: userReply
-          })
-        });
-        console.log(`📤 Statut Resend : HTTP ${resendRes.status}`);
-        return;
-      }
-
-      // Par défaut : Expédition via MailChannels API
-      console.log('🚀 Envoi via MailChannels API...');
+      // Expédition vers le client avec l'expéditeur officiel compagnie@baldebraise.com
       const mailchannelsPayload = {
         personalizations: [
           {
@@ -259,14 +238,14 @@ export default {
       });
 
       const resBody = await sendRes.text();
-      console.log(`📤 Statut MailChannels HTTP ${sendRes.status} : ${resBody.substring(0, 100)}`);
+      console.log(`📤 Statut d'envoi MailChannels : HTTP ${sendRes.status} (${resBody.substring(0, 80)})`);
       return;
     }
 
     // =========================================================================
-    // CAS 2 : RÉCEPTION D'UN NOUVEAU MESSAGE D'UN CLIENT
+    // CAS 2 : UN CLIENT ÉCRIT À COMPAGNIE@BALDEBRAISE.COM
     // =========================================================================
-    console.log('📬 Réception d\'un nouveau message client -> Transfert enrichi vers Gmail');
+    console.log('📬 Réception d\'un message client -> Transfert vers ciebaldebraise@gmail.com');
 
     const clientTag = encodeClientTag(sender);
     const relayReplyTo = `relais+${clientTag}@baldebraise.com`;
