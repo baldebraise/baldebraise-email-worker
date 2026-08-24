@@ -1,12 +1,21 @@
 /**
  * ============================================================================
- * CLOUDFLARE EMAIL WORKER - PASSERELLE INTELLIGENTE BALDEBRAISE (V2 CONDENSÉE)
+ * CLOUDFLARE EMAIL WORKER - PASSERELLE INTELLIGENTE BALDEBRAISE (V3 INFALLIBLE)
  * ============================================================================
- * Nettoie les citations brutes Gmail, met en valeur votre message personnalisé,
- * et ajoute un condensé soigné de la demande de devis initiale avec template VIP.
+ * Gère le relai des réponses Gmail vers les clients avec :
+ * 1. Détection élargie des adresses d'expédition (ciebaldebraise & axe.aube)
+ * 2. Nettoyage complet des citations brutes
+ * 3. Condensé élégant de la demande de devis initiale
+ * 4. Double moteur d'expédition (MailChannels + Resend API si configurée)
  */
 
-const OWNER_EMAILS = ['ciebaldebraise@gmail.com', 'cie.baldebraise@gmail.com'];
+const OWNER_EMAILS = [
+  'ciebaldebraise@gmail.com',
+  'cie.baldebraise@gmail.com',
+  'axe.aube@gmail.com',
+  'axeaube@gmail.com'
+];
+
 const OFFICIAL_EMAIL = 'compagnie@baldebraise.com';
 const BRAND_NAME = 'Compagnie BalDeBraise';
 const LOGO_URL = 'https://baldebraise.com/assets/media/logos/logo_v2_clean.png';
@@ -14,16 +23,15 @@ const SITE_URL = 'https://baldebraise.com';
 const PHONE_NUMBER = '+33 7 86 62 75 92';
 
 function encodeClientTag(clientEmail) {
-  return clientEmail.replace('@', '=');
+  return clientEmail.replace(/@/g, '=');
 }
 
 function decodeClientTag(tag) {
-  return tag.replace('=', '@');
+  return tag.replace(/=/g, '@');
 }
 
 // Extraction du message propre et du condensé de la demande initiale
 function parseGmailReply(rawText) {
-  // Découpage au niveau de la citation Gmail standard (FR ou EN)
   const splitRegex = /(?:On\s+[\w\s,:]+\s+at\s+[\d:]+\s*(?:AM|PM)?[\s\S]*?wrote:|Le\s+[\w\s,.:]+a\s+écrit\s*:|---------- Forwarded message ---------|------------- Message transféré -------------)/i;
   
   let userReply = rawText;
@@ -35,7 +43,6 @@ function parseGmailReply(rawText) {
     quotedText = rawText.substring(match.index).trim();
   }
 
-  // Extraction de la date et des paramètres du devis initial s'ils sont présents
   let quoteInfo = null;
   if (quotedText.includes('DEMANDE DE DEVIS') || quotedText.includes('DEVIS BALDEBRAISE')) {
     let requestDate = '';
@@ -76,7 +83,7 @@ function buildVipResponseTemplate(userReply, quoteInfo, subject) {
   let quoteSummaryHtml = '';
   if (quoteInfo) {
     quoteSummaryHtml = `
-      <div style="margin-top: 30px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 85, 0, 0.25); border-left: 4px solid #FF5500; border-radius: 10px; padding: 18px 20px;">
+      <div style="margin-top: 28px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 85, 0, 0.25); border-left: 4px solid #FF5500; border-radius: 10px; padding: 18px 20px;">
         <div style="color: #FFAA00; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">
           📋 Rappel de votre demande de devis ${quoteInfo.requestDate ? '(' + quoteInfo.requestDate + ')' : ''}
         </div>
@@ -162,29 +169,29 @@ export default {
     const recipient = (message.to || '').toLowerCase().trim();
     const rawSubject = message.headers.get('subject') || 'Message BalDeBraise';
 
-    console.log(`📨 Email reçu : De [${sender}] Vers [${recipient}] | Objet : ${rawSubject}`);
+    console.log(`📨 [Email Worker] De [${sender}] Vers [${recipient}] | Objet : ${rawSubject}`);
 
     // =========================================================================
-    // CAS 1 : VOUS RÉPONDEZ DEPUIS GMAIL (ciebaldebraise@gmail.com)
+    // CAS 1 : RÉPONSE VERS LE RELAIS (relais+client=domaine@baldebraise.com)
     // =========================================================================
-    const isOwner = OWNER_EMAILS.some(owner => sender.includes(owner));
     const isRelayReply = recipient.includes('relais+') || recipient.includes('reply+');
+    const isAuthorizedSender = OWNER_EMAILS.some(owner => sender.includes(owner.toLowerCase())) || isRelayReply;
 
-    if (isOwner && isRelayReply) {
-      console.log('⚡ Détection d\'une réponse du gérant depuis Gmail -> Renvoi vers le client');
+    if (isRelayReply && isAuthorizedSender) {
+      console.log('⚡ [Relais Activé] Détection d\'une réponse Gmail -> Redirection vers le client...');
 
-      const match = recipient.match(/(?:relais|reply)\+([^@]+)@/);
+      // Extraction de l'email client depuis le destinataire relais+client=domaine.com@...
+      const match = recipient.match(/(?:relais|reply)\+([^@>]+)@/i);
       if (!match || !match[1]) {
-        console.error('❌ Destinataire client invalide :', recipient);
+        console.error('❌ Impossible de décoder l\'email client depuis :', recipient);
         return;
       }
 
       const clientEmail = decodeClientTag(match[1]);
-      console.log(`🎯 Email client décodé : ${clientEmail}`);
+      console.log(`🎯 Email client cible : ${clientEmail}`);
 
       const rawMime = await readRawText(message.raw);
       
-      // Extraction du corps de message propre
       let bodyText = rawMime;
       if (rawMime.includes('\r\n\r\n')) {
         bodyText = rawMime.split('\r\n\r\n').slice(1).join('\r\n\r\n');
@@ -194,6 +201,30 @@ export default {
       const cleanSubject = rawSubject.startsWith('Re:') ? rawSubject : `Re: ${rawSubject}`;
       const htmlContent = buildVipResponseTemplate(userReply, quoteInfo, cleanSubject);
 
+      // Si une clé Resend API est configurée dans l'environnement Cloudflare
+      if (env && env.RESEND_API_KEY) {
+        console.log('🚀 Envoi via Resend API...');
+        const resendRes = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            from: `${BRAND_NAME} <${OFFICIAL_EMAIL}>`,
+            to: [clientEmail],
+            reply_to: `relais+${encodeClientTag(clientEmail)}@baldebraise.com`,
+            subject: cleanSubject,
+            html: htmlContent,
+            text: userReply
+          })
+        });
+        console.log(`📤 Statut Resend : HTTP ${resendRes.status}`);
+        return;
+      }
+
+      // Par défaut : Expédition via MailChannels API
+      console.log('🚀 Envoi via MailChannels API...');
       const mailchannelsPayload = {
         personalizations: [
           {
@@ -227,14 +258,15 @@ export default {
         body: JSON.stringify(mailchannelsPayload)
       });
 
-      console.log(`📤 Statut d'envoi vers ${clientEmail} : HTTP ${sendRes.status}`);
+      const resBody = await sendRes.text();
+      console.log(`📤 Statut MailChannels HTTP ${sendRes.status} : ${resBody.substring(0, 100)}`);
       return;
     }
 
     // =========================================================================
-    // CAS 2 : UN CLIENT ÉCRIT À COMPAGNIE@BALDEBRAISE.COM
+    // CAS 2 : RÉCEPTION D'UN NOUVEAU MESSAGE D'UN CLIENT
     // =========================================================================
-    console.log('📬 Réception d\'un message client -> Transfert enrichi vers Gmail');
+    console.log('📬 Réception d\'un nouveau message client -> Transfert enrichi vers Gmail');
 
     const clientTag = encodeClientTag(sender);
     const relayReplyTo = `relais+${clientTag}@baldebraise.com`;
