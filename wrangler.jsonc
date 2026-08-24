@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "baldebraise-email-relay",
+  "main": "src/index.js",
+  "compatibility_date": "2024-08-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true
+    }
+  }
+}
