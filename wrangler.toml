@@ -1,6 +1,7 @@
-name = "baldebraise-email-relay"
+﻿name = "baldebraise-email-relay"
 main = "src/index.js"
 compatibility_date = "2024-08-01"
 
-# Cloudflare Email Worker Configuration
-# Directement prêt pour être connecté à l'Email Routing de baldebraise.com
+send_email = [
+  { name = "EMAIL" }
+]

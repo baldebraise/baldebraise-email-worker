@@ -1,11 +1,11 @@
+import { EmailMessage } from "cloudflare:email";
+
 /**
  * ============================================================================
- * CLOUDFLARE EMAIL WORKER - PASSERELLE SÉCURISÉE & CONDENSÉE BALDEBRAISE (V4)
+ * CLOUDFLARE EMAIL WORKER - PASSERELLE 100% CLOUDFLARE NATIVE
  * ============================================================================
- * 1. Cloudflare Native Email (env.EMAIL) prioritaire pour 100% de fiabilité.
- * 2. Repli MailChannels automatique.
- * 3. Alertes d'erreurs garanties vers cie.baldebraise@gmail.com.
- * 4. Template VIP condensé et parsing anti-citations.
+ * 100% Cloudflare (env.EMAIL) : Aucun service tiers, aucun compte externe.
+ * Sécurité stricte, nettoyage des citations Gmail et template VIP condensé.
  */
 
 const OWNER_EMAILS = [
@@ -27,7 +27,7 @@ function decodeClientTag(tag) {
   return (tag || '').trim().replace(/=/g, '@');
 }
 
-// Fonction d'alerte par e-mail en cas d'erreur du Worker
+// Fonction d'alerte par e-mail en cas d'erreur
 async function sendErrorAlert(env, message, errorTitle, errorDetails, rawContent = '') {
   console.error(`🚨 [ALERTE RELAIS EMAIL] ${errorTitle} - ${errorDetails}`);
 
@@ -76,7 +76,7 @@ async function sendErrorAlert(env, message, errorTitle, errorDetails, rawContent
 </body>
 </html>`;
 
-  // 1. Envoi prioritaire via Cloudflare Native Email binding
+  // 1. Envoi via Cloudflare Native Email
   if (env && env.EMAIL) {
     try {
       const rawMime =
@@ -90,25 +90,16 @@ async function sendErrorAlert(env, message, errorTitle, errorDetails, rawContent
       console.log('✅ Alerte envoyée via Cloudflare Native EMAIL');
       return;
     } catch(e) {
-      console.warn('Échec envoi alerte Cloudflare Native:', e.message);
+      console.warn('Échec envoi alerte Native EMAIL:', e.message);
     }
   }
 
-  // 2. Repli MailChannels
+  // 2. Repli message.forward si disponible
   try {
-    await fetch('https://api.mailchannels.net/tx/v1/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: OWNER_EMAILS[0] }] }],
-        from: { email: OFFICIAL_EMAIL, name: 'BalDeBraise Alerte Relais' },
-        subject: `🚨 [ALERTE RELAIS] ${errorTitle}`,
-        content: [{ type: 'text/html', value: alertHtml }]
-      })
-    });
-  } catch(e) {
-    console.error('Échec envoi alerte MailChannels:', e.message);
-  }
+    if (message && typeof message.forward === 'function') {
+      await message.forward(OWNER_EMAILS[0]);
+    }
+  } catch(_) {}
 }
 
 // Extraction robuste du message et des métadonnées du devis
@@ -286,7 +277,7 @@ export default {
     const recipient = (message.to || '').toLowerCase().trim();
     const rawSubject = message.headers.get('subject') || 'Message BalDeBraise';
 
-    console.log(`📨 [Email Worker] Entrant : De [${sender}] Vers [${recipient}] | Objet : ${rawSubject}`);
+    console.log(`📨 [Email Worker 100% Cloudflare] De [${sender}] Vers [${recipient}] | Objet : ${rawSubject}`);
 
     // =========================================================================
     // CAS 1 : VOUS RÉPONDEZ DEPUIS VOTRE GMAIL GÉRANT (ciebaldebraise@gmail.com)
@@ -335,80 +326,39 @@ export default {
       const cleanSubject = rawSubject.startsWith('Re:') ? rawSubject : `Re: ${rawSubject}`;
       const htmlContent = buildVipResponseTemplate(replyText, quoteInfo, cleanSubject);
 
-      // 1. PRIORITÉ : Envoi via Cloudflare Native Email binding (si activé)
-      if (env && env.EMAIL) {
-        try {
-          const rawMimeOut =
-            `From: "${BRAND_NAME}" <${OFFICIAL_EMAIL}>\r\n` +
-            `To: ${clientEmail}\r\n` +
-            `Reply-To: "${BRAND_NAME}" <relais+${encodeClientTag(clientEmail)}@baldebraise.com>\r\n` +
-            `Subject: =?utf-8?B?${btoa(unescape(encodeURIComponent(cleanSubject)))}?=\r\n` +
-            `MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n` +
-            htmlContent;
+      // 100% CLOUDFLARE NATIVE EMAIL
+      try {
+        const rawMimeOut =
+          `From: "${BRAND_NAME}" <${OFFICIAL_EMAIL}>\r\n` +
+          `To: ${clientEmail}\r\n` +
+          `Reply-To: "${BRAND_NAME}" <relais+${encodeClientTag(clientEmail)}@baldebraise.com>\r\n` +
+          `Subject: =?utf-8?B?${btoa(unescape(encodeURIComponent(cleanSubject)))}?=\r\n` +
+          `MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n` +
+          htmlContent;
 
+        if (env && env.EMAIL && typeof env.EMAIL.send === 'function') {
           const emailMsg = new EmailMessage(OFFICIAL_EMAIL, clientEmail, rawMimeOut);
           await env.EMAIL.send(emailMsg);
-          console.log(`✅ [Cloudflare Native] E-mail envoyé avec succès à ${clientEmail}`);
+          console.log(`✅ [100% Cloudflare Native] E-mail envoyé avec succès à ${clientEmail}`);
           return;
-        } catch(cfErr) {
-          console.warn('⚠️ Cloudflare Native EMAIL.send a échoué :', cfErr.message);
-        }
-      }
-
-      // 2. REPLI : Expédition via MailChannels API
-      const mailchannelsPayload = {
-        personalizations: [
-          {
-            to: [{ email: clientEmail }]
+        } else {
+          // Essai avec EmailMessage global
+          const emailMsg = new EmailMessage(OFFICIAL_EMAIL, clientEmail, rawMimeOut);
+          if (message && typeof message.reply === 'function') {
+            await message.reply(emailMsg);
+          } else if (env && env.EMAIL) {
+            await env.EMAIL.send(emailMsg);
           }
-        ],
-        from: {
-          email: OFFICIAL_EMAIL,
-          name: BRAND_NAME
-        },
-        reply_to: {
-          email: `relais+${encodeClientTag(clientEmail)}@baldebraise.com`,
-          name: BRAND_NAME
-        },
-        subject: cleanSubject,
-        content: [
-          {
-            type: 'text/html',
-            value: htmlContent
-          },
-          {
-            type: 'text/plain',
-            value: replyText
-          }
-        ]
-      };
-
-      try {
-        const sendRes = await fetch('https://api.mailchannels.net/tx/v1/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(mailchannelsPayload)
-        });
-
-        const resBody = await sendRes.text();
-        console.log(`📤 Statut d'envoi MailChannels : HTTP ${sendRes.status} (${resBody.substring(0, 80)})`);
-
-        if (!sendRes.ok && sendRes.status !== 202) {
-          await sendErrorAlert(
-            env,
-            message,
-            `Erreur d'expédition MailChannels (HTTP ${sendRes.status})`,
-            `Le serveur MailChannels a refusé l'envoi vers [${clientEmail}] : ${resBody}`,
-            replyText
-          );
+          console.log(`✅ [100% Cloudflare Native Direct] E-mail envoyé à ${clientEmail}`);
+          return;
         }
-      } catch(err) {
-        console.error('❌ Exception envoi MailChannels:', err.message);
+      } catch(cfErr) {
+        console.error('❌ Erreur Cloudflare Native Email:', cfErr.message);
         await sendErrorAlert(
           env,
           message,
-          'Exception réseau lors de l\'envoi',
-          `Erreur : ${err.message}`,
+          'Erreur d\'envoi Cloudflare Native Email',
+          `Le moteur Cloudflare Native Email a retourné l'erreur suivante : ${cfErr.message}`,
           replyText
         );
       }
